@@ -1,7 +1,10 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rusb::{DeviceHandle, Error, GlobalContext};
+use std::time::Duration;
+
+use rusb::{Device, DeviceHandle, UsbContext};
+use tauri::utils::Error;
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
@@ -48,7 +51,7 @@ fn to_vendor_id(id: u16) -> Result<VendorIdType, Error> {
     match id {
         0x0951 => Ok(VendorIdType::NA),
         0x03f0 => Ok(VendorIdType::EU),
-        _ => Err(Error::Other),
+        _ => Err(Error::InvalidPattern("t-v-e".to_owned())),
     }
 }
 
@@ -59,68 +62,69 @@ fn to_product_id(id: u16) -> Result<ProductIdType, Error> {
         0x028c => Ok(ProductIdType::EU2),
         0x048c => Ok(ProductIdType::EU3),
         0x068c => Ok(ProductIdType::EU4),
-        _ => Err(Error::Other),
+        _ => Err(Error::InvalidPattern("t-p-e".to_owned())),
     }
 }
+#[derive(Debug)]
+struct Endpoint {
+    config: u8,
+    iface: u8,
+    setting: u8,
+    address: u8,
+}
 
-fn send_packets(handle: &DeviceHandle<GlobalContext>, data_arr: &[u8]) -> Result<(), Error> {
-    // Construct the header packet
-    let header_packet = [
-        0x04, 0xf2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00,
-    ];
-
-    // Send the header packet to the USB device
-    handle.write_control(
-        0x21,
-        0x09,
-        0x0300,
-        0x0000,
-        &header_packet,
-        std::time::Duration::from_secs(1),
-    )?;
-
-    // Iterate over data_arr and send color command data packets
-    for &color_command in data_arr.iter() {
-        let color_packet = [color_command /* other data if needed */];
-        handle.write_control(
-            0x21,
-            0x09,
-            0x0300,
-            0x0000,
-            &color_packet,
-            std::time::Duration::from_secs(1),
-        )?;
-        // Add a delay between packets if required
-        std::thread::sleep(std::time::Duration::from_millis(55));
+// returns all readable endpoints for given usb device and descriptor
+fn find_readable_endpoints<T: UsbContext>(device: &mut Device<T>) -> rusb::Result<Vec<Endpoint>> {
+    let device_desc = device.device_descriptor()?;
+    let mut endpoints = vec![];
+    for n in 0..device_desc.num_configurations() {
+        let config_desc = match device.config_descriptor(n) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // println!("{:#?}", config_desc);
+        for interface in config_desc.interfaces() {
+            for interface_desc in interface.descriptors() {
+                // println!("{:#?}", interface_desc);
+                for endpoint_desc in interface_desc.endpoint_descriptors() {
+                    // println!("{:#?}", endpoint_desc);
+                    endpoints.push(Endpoint {
+                        config: config_desc.number(),
+                        iface: interface_desc.interface_number(),
+                        setting: interface_desc.setting_number(),
+                        address: endpoint_desc.address(),
+                    });
+                }
+            }
+        }
     }
 
-    Ok(())
+    Ok(endpoints)
 }
 
 fn main() {
-    for device in rusb::devices().unwrap().iter() {
+    for mut device in rusb::devices().unwrap().iter() {
         let device_desc = device.device_descriptor().unwrap();
 
         let vendor_id = to_vendor_id(device_desc.vendor_id());
         let product_id = to_product_id(device_desc.product_id());
 
         if vendor_id.is_ok() && product_id.is_ok() {
+            let endpoints = find_readable_endpoints(&mut device).unwrap();
+            let endpoint = endpoints
+                .get(1)
+                .expect("No Configurable endpoint found on device");
+
+            println!("{:#04x}", endpoint.config);
+            println!("{:#04x}", endpoint.iface);
+            println!("{:#04x}", endpoint.setting);
+            println!("{:#04x}", endpoint.address);
+
             Microphone {
                 vendor: vendor_id.unwrap(),
                 product: product_id.unwrap(),
             }
             .print_value();
-
-            let mut device_handle = device.open().unwrap();
-            let colcommand = vec![0x12, 0x34, 0x56];
-
-            if send_packets(&device_handle, &colcommand).is_ok() {
-                loop {
-                    send_packets(&device_handle, &colcommand);
-                }
-            }
         }
     }
 
