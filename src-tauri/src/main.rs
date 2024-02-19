@@ -1,9 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::time::Duration;
-
-use tauri::utils::Error;
+use rusb::{DeviceHandle, Error, GlobalContext};
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
@@ -50,9 +48,7 @@ fn to_vendor_id(id: u16) -> Result<VendorIdType, Error> {
     match id {
         0x0951 => Ok(VendorIdType::NA),
         0x03f0 => Ok(VendorIdType::EU),
-        _ => Err(Error::InvalidPattern(
-            "Vendor ID does not match Quadcast's vendors' ID.".to_owned(),
-        )),
+        _ => Err(Error::Other),
     }
 }
 
@@ -63,10 +59,44 @@ fn to_product_id(id: u16) -> Result<ProductIdType, Error> {
         0x028c => Ok(ProductIdType::EU2),
         0x048c => Ok(ProductIdType::EU3),
         0x068c => Ok(ProductIdType::EU4),
-        _ => Err(Error::InvalidPattern(
-            "Product ID does not match Quadcast's product IDs.".to_owned(),
-        )),
+        _ => Err(Error::Other),
     }
+}
+
+fn send_packets(handle: &DeviceHandle<GlobalContext>, data_arr: &[u8]) -> Result<(), Error> {
+    // Construct the header packet
+    let header_packet = [
+        0x04, 0xf2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
+    // Send the header packet to the USB device
+    handle.write_control(
+        0x21,
+        0x09,
+        0x0300,
+        0x0000,
+        &header_packet,
+        std::time::Duration::from_secs(1),
+    )?;
+
+    // Iterate over data_arr and send color command data packets
+    for &color_command in data_arr.iter() {
+        let color_packet = [color_command /* other data if needed */];
+        handle.write_control(
+            0x21,
+            0x09,
+            0x0300,
+            0x0000,
+            &color_packet,
+            std::time::Duration::from_secs(1),
+        )?;
+        // Add a delay between packets if required
+        std::thread::sleep(std::time::Duration::from_millis(55));
+    }
+
+    Ok(())
 }
 
 fn main() {
@@ -83,24 +113,14 @@ fn main() {
             }
             .print_value();
 
-            let device_handle = device.open().unwrap();
+            let mut device_handle = device.open().unwrap();
+            let colcommand = vec![0x12, 0x34, 0x56];
 
-            let request_type = rusb::request_type(
-                rusb::Direction::Out,
-                rusb::RequestType::Vendor,
-                rusb::Recipient::Device,
-            );
-
-            device_handle
-                .write_control(
-                    request_type,
-                    0x09,
-                    0x0300,
-                    0x0000,
-                    &[0x12, 0x00, 0x00],
-                    Duration::from_millis(1000),
-                )
-                .expect("deu ruim");
+            if send_packets(&device_handle, &colcommand).is_ok() {
+                loop {
+                    send_packets(&device_handle, &colcommand);
+                }
+            }
         }
     }
 
