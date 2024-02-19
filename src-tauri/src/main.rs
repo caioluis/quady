@@ -1,6 +1,8 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::time::Duration;
+
 use tauri::utils::Error;
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
@@ -79,7 +81,26 @@ fn main() {
                 vendor: vendor_id.unwrap(),
                 product: product_id.unwrap(),
             }
-            .print_value()
+            .print_value();
+
+            let device_handle = device.open().unwrap();
+
+            let request_type = rusb::request_type(
+                rusb::Direction::Out,
+                rusb::RequestType::Vendor,
+                rusb::Recipient::Device,
+            );
+
+            device_handle
+                .write_control(
+                    request_type,
+                    0x09,
+                    0x0300,
+                    0x0000,
+                    &[0x12, 0x00, 0x00],
+                    Duration::from_millis(1000),
+                )
+                .expect("deu ruim");
         }
     }
 
