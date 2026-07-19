@@ -1,53 +1,653 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/tauri";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { ColorWheel } from "./components/ColorWheel";
+import {
+    compileEffect,
+    CompiledEffect,
+    Effect,
+    frameColors,
+    hexToRgb,
+    LightTarget,
+    makeEffect,
+    MODES,
+    RgbMode,
+} from "./rgb";
+
 import "./App.css";
 
+const STORAGE_EFFECTS = "quady.effects";
+const STORAGE_SWATCHES = "quady.swatches";
+
+const PRESET_SWATCHES = [
+    "#ff3b30",
+    "#ff9500",
+    "#ffd60a",
+    "#34c759",
+    "#00c7be",
+    "#30b0ff",
+    "#0a84ff",
+    "#5856d6",
+    "#af52de",
+    "#ff2d92",
+    "#ffffff",
+];
+
+function loadEffects(): Effect[] {
+    try {
+        const raw = localStorage.getItem(STORAGE_EFFECTS);
+        if (raw) {
+            const parsed = JSON.parse(raw) as Effect[];
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+    } catch {
+        // fall through to default
+    }
+    return [makeEffect("Cycle")];
+}
+
+function loadSwatches(): string[] {
+    try {
+        const raw = localStorage.getItem(STORAGE_SWATCHES);
+        if (raw) return JSON.parse(raw) as string[];
+    } catch {
+        // ignore
+    }
+    return [];
+}
+
+// ------------------------------------------------------------------- icons
+
+function ModeIcon({ mode }: { mode: RgbMode }) {
+    const stroke = {
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 1.6,
+        strokeLinecap: "round" as const,
+        strokeLinejoin: "round" as const,
+    };
+    return (
+        <svg className="mode-icon" viewBox="0 0 16 16" width="15" height="15">
+            {mode === "Solid" && (
+                <circle cx="8" cy="8" r="4.5" fill="currentColor" />
+            )}
+            {mode === "Blink" && (
+                <>
+                    <circle cx="8" cy="8" r="2.8" fill="currentColor" />
+                    <path
+                        {...stroke}
+                        d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M12.8 3.2l-1.4 1.4M4.6 11.4l-1.4 1.4"
+                    />
+                </>
+            )}
+            {mode === "Cycle" && (
+                <>
+                    <path {...stroke} d="M13.4 8.6A5.5 5.5 0 1 1 12 4.2" />
+                    <path {...stroke} d="M12.4 1.6v2.8H9.6" />
+                </>
+            )}
+            {mode === "Wave" && (
+                <path
+                    {...stroke}
+                    d="M1.2 8c1.9-3.6 3.9-3.6 5.7 0s3.8 3.6 5.7 0"
+                />
+            )}
+            {mode === "Lightning" && (
+                <path
+                    d="M9.2 1 3.6 9h3.2l-.9 6L12.4 7H9.2l1-6z"
+                    fill="currentColor"
+                />
+            )}
+            {mode === "Pulse" && (
+                <>
+                    <circle cx="8" cy="8" r="2.2" fill="currentColor" />
+                    <circle {...stroke} cx="8" cy="8" r="5.4" />
+                </>
+            )}
+        </svg>
+    );
+}
+
+// -------------------------------------------------------------------- stage
+
+interface StageProps {
+    /** Effect driving each LED group, or null when the group is untargeted. */
+    topEffect: Effect | null;
+    bottomEffect: Effect | null;
+    /** The effect currently being edited (for the target highlight). */
+    selected: Effect | null;
+    selecting: boolean;
+    onPick: (which: "top" | "bottom") => void;
+}
+
+function LightsStage({
+    topEffect,
+    bottomEffect,
+    selected,
+    selecting,
+    onPick,
+}: StageProps) {
+    const stageRef = useRef<HTMLElement>(null);
+    const topRef = useRef<HTMLDivElement>(null);
+    const bottomRef = useRef<HTMLDivElement>(null);
+
+    const topCompiled = useMemo(
+        () => (topEffect ? compileEffect(topEffect) : null),
+        [topEffect],
+    );
+    const bottomCompiled = useMemo(
+        () => (bottomEffect ? compileEffect(bottomEffect) : null),
+        [bottomEffect],
+    );
+
+    useEffect(() => {
+        const paint = (el: HTMLDivElement | null, c: string) => {
+            if (!el) return;
+            el.style.background = `radial-gradient(circle at 38% 34%, ${c}, ${c} 55%, transparent 130%)`;
+            el.style.boxShadow = `0 0 34px 8px ${c}b0, 0 0 110px 34px ${c}45`;
+        };
+        let raf = 0;
+        const start = performance.now();
+        const colorAt = (
+            compiled: CompiledEffect | null,
+            t: number,
+            which: "top" | "bottom",
+        ) => {
+            if (!compiled) return "#000000";
+            const c = frameColors(compiled, t);
+            return which === "top" ? c.top : c.bottom;
+        };
+        const tick = (now: number) => {
+            const t = now - start;
+            const top = colorAt(topCompiled, t, "top");
+            const bottom = colorAt(bottomCompiled, t, "bottom");
+            paint(topRef.current, top);
+            paint(bottomRef.current, bottom);
+            if (stageRef.current) {
+                stageRef.current.style.setProperty("--amb-top", `${top}1f`);
+                stageRef.current.style.setProperty(
+                    "--amb-bottom",
+                    `${bottom}1a`,
+                );
+            }
+            raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+    }, [topCompiled, bottomCompiled]);
+
+    const target = selected?.target ?? "all";
+    const lightClass = (which: "top" | "bottom") =>
+        [
+            "light",
+            selecting ? "pickable" : "",
+            !selecting && target === which ? "targeted" : "",
+        ]
+            .filter(Boolean)
+            .join(" ");
+
+    return (
+        <main className="stage" ref={stageRef}>
+            {selecting && (
+                <div className="stage-hint">
+                    <span className="hint-dot" />
+                    Click a light to target it
+                </div>
+            )}
+            <div className="lights">
+                <div
+                    className={lightClass("top")}
+                    title="Top light"
+                    onClick={() => selecting && onPick("top")}
+                >
+                    <div className="light-core" ref={topRef} />
+                </div>
+                <div
+                    className={lightClass("bottom")}
+                    title="Bottom light"
+                    onClick={() => selecting && onPick("bottom")}
+                >
+                    <div className="light-core" ref={bottomRef} />
+                </div>
+            </div>
+        </main>
+    );
+}
+
+// ---------------------------------------------------------------------- app
+
+const initialEffects = loadEffects();
+
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+    const [effects, setEffects] = useState<Effect[]>(initialEffects);
+    const [selectedId, setSelectedId] = useState<string | null>(
+        initialEffects[0]?.id ?? null,
+    );
+    const [colorIndex, setColorIndex] = useState(0);
+    const [addOpen, setAddOpen] = useState(false);
+    const [selecting, setSelecting] = useState(false);
+    const [swatches, setSwatches] = useState<string[]>(loadSwatches);
+    const [statusText, setStatusText] = useState("backend unavailable");
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
-    setGreetMsg(await invoke("greet", { name }));
-  }
+    const sel = effects.find((e) => e.id === selectedId) ?? null;
+    const stopIndex = sel ? Math.min(colorIndex, sel.colors.length - 1) : 0;
+    const currentColor = sel?.colors[stopIndex] ?? "#ff0000";
 
-  return (
-    <div className="container">
-      <h1>Welcome to Tauri!</h1>
+    useEffect(() => {
+        localStorage.setItem(STORAGE_EFFECTS, JSON.stringify(effects));
+    }, [effects]);
 
-      <div className="row">
-        <a href="https://vitejs.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://reactjs.org" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
+    useEffect(() => {
+        pushEffectsToBackend(effects);
+    }, [effects]);
 
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+    useEffect(() => {
+        let mounted = true;
+        const refreshStatus = async () => {
+            try {
+                const status = await invoke<string>("device_status");
+                if (mounted) setStatusText(status);
+            } catch {
+                if (mounted) setStatusText("backend unavailable");
+            }
+        };
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
+        refreshStatus();
+        const interval = window.setInterval(refreshStatus, 5000);
+        return () => {
+            mounted = false;
+            window.clearInterval(interval);
+        };
+    }, []);
 
-      <p>{greetMsg}</p>
-    </div>
-  );
+    useEffect(() => {
+        localStorage.setItem(STORAGE_SWATCHES, JSON.stringify(swatches));
+    }, [swatches]);
+
+    const pushEffectsToBackend = async (all: Effect[]) => {
+        try {
+            const cfgs = all.map((effect) => ({
+                mode: effect.mode,
+                colors: effect.colors.map((hex) => {
+                    const [r, g, b] = hexToRgb(hex);
+                    return (r << 16) | (g << 8) | b;
+                }),
+                speed: effect.speed,
+                brightness: effect.brightness,
+                target: effect.target,
+            }));
+            await invoke("apply_effects", { cfgs });
+        } catch (error) {
+            console.error("Failed to apply effects:", error);
+        }
+    };
+
+    const updateSel = (patch: Partial<Effect>) => {
+        if (!sel) return;
+        setEffects((all) =>
+            all.map((e) => (e.id === sel.id ? { ...e, ...patch } : e)),
+        );
+    };
+
+    const addEffect = (mode: RgbMode) => {
+        const fx = makeEffect(mode);
+        setEffects((all) => [...all, fx]);
+        setSelectedId(fx.id);
+        setColorIndex(0);
+        setAddOpen(false);
+    };
+
+    const removeEffect = (id: string) => {
+        setEffects((all) => {
+            const next = all.filter((e) => e.id !== id);
+            if (id === selectedId) {
+                setSelectedId(next[0]?.id ?? null);
+                setColorIndex(0);
+            }
+            return next;
+        });
+    };
+
+    const setStopColor = (hex: string) => {
+        if (!sel) return;
+        const colors = sel.colors.map((c, i) => (i === stopIndex ? hex : c));
+        updateSel({ colors });
+    };
+
+    const addStopAt = (fraction: number) => {
+        if (!sel || sel.mode === "Solid") return;
+        const n = sel.colors.length;
+        const idx = Math.min(n, Math.max(1, Math.round(fraction * n)));
+        const colors = [...sel.colors];
+        colors.splice(idx, 0, currentColor);
+        updateSel({ colors });
+        setColorIndex(idx);
+    };
+
+    const removeStop = (idx: number) => {
+        if (!sel || sel.colors.length <= 1) return;
+        const colors = sel.colors.filter((_, i) => i !== idx);
+        updateSel({ colors });
+        setColorIndex(Math.max(0, Math.min(idx, colors.length - 1)));
+    };
+
+    // Same resolution rule as the backend: the last effect in the list whose
+    // target includes an LED group drives that group.
+    const effectFor = (which: LightTarget): Effect | null => {
+        for (let i = effects.length - 1; i >= 0; i--) {
+            const e = effects[i];
+            if (e.target === "all" || e.target === which) return e;
+        }
+        return null;
+    };
+
+    const isGradientMode = sel?.mode === "Cycle" || sel?.mode === "Wave";
+
+    const gradient =
+        sel && sel.colors.length > 1
+            ? `linear-gradient(90deg, ${sel.colors
+                  .map((c, i) => `${c} ${(i / (sel.colors.length - 1)) * 100}%`)
+                  .join(", ")})`
+            : currentColor;
+
+    return (
+        <div className="app">
+            <header className="topbar">
+                <span className="wordmark">Quady</span>
+                <span className="topbar-sub">HyperX QuadCast S</span>
+                <span className="topbar-status">{statusText}</span>
+            </header>
+
+            <LightsStage
+                topEffect={effectFor("top")}
+                bottomEffect={effectFor("bottom")}
+                selected={sel}
+                selecting={selecting}
+                onPick={(which) => {
+                    updateSel({ target: which });
+                    setSelecting(false);
+                }}
+            />
+
+            <footer className="controls">
+                {/* ------------------------------------------------------ EFFECTS */}
+                <section className="panel panel-effects">
+                    <h2>Effects</h2>
+                    <div className="fx-add-wrap">
+                        <button
+                            className="fx-row fx-add"
+                            onClick={() => setAddOpen((v) => !v)}
+                        >
+                            <svg viewBox="0 0 16 16" width="15" height="15">
+                                <path
+                                    d="M8 2.5v11M2.5 8h11"
+                                    stroke="currentColor"
+                                    strokeWidth="1.6"
+                                    strokeLinecap="round"
+                                />
+                            </svg>
+                            Add Effect
+                        </button>
+                        {addOpen && (
+                            <>
+                                <div
+                                    className="menu-backdrop"
+                                    onClick={() => setAddOpen(false)}
+                                />
+                                <div className="fx-menu">
+                                    {MODES.map((m) => (
+                                        <button
+                                            key={m.mode}
+                                            onClick={() => addEffect(m.mode)}
+                                        >
+                                            <ModeIcon mode={m.mode} />
+                                            <span className="fx-menu-name">
+                                                {m.mode}
+                                            </span>
+                                            <span className="fx-menu-hint">
+                                                {m.hint}
+                                            </span>
+                                        </button>
+                                    ))}
+                                    <button disabled>
+                                        <svg
+                                            className="mode-icon"
+                                            viewBox="0 0 16 16"
+                                            width="15"
+                                            height="15"
+                                        >
+                                            <path
+                                                d="M2 12V9M5 12V5M8 12V7M11 12V3M14 12v-6"
+                                                stroke="currentColor"
+                                                strokeWidth="1.6"
+                                                strokeLinecap="round"
+                                            />
+                                        </svg>
+                                        <span className="fx-menu-name">
+                                            Visualizer
+                                        </span>
+                                        <span className="fx-menu-hint">
+                                            Coming soon
+                                        </span>
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                    <div className="fx-list">
+                        {effects.map((fx) => (
+                            <div
+                                key={fx.id}
+                                className={`fx-row${fx.id === selectedId ? " selected" : ""}`}
+                                onClick={() => {
+                                    setSelectedId(fx.id);
+                                    setColorIndex(0);
+                                }}
+                            >
+                                <ModeIcon mode={fx.mode} />
+                                <span className="fx-name">{fx.mode}</span>
+                                <button
+                                    className="fx-del"
+                                    title="Remove effect"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeEffect(fx.id);
+                                    }}
+                                >
+                                    ×
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </section>
+
+                {/* ------------------------------------------------------- TARGET */}
+                <section
+                    className={`panel panel-target${sel ? "" : " disabled"}`}
+                >
+                    <h2>Target</h2>
+                    <div className="seg">
+                        <button
+                            className={sel?.target === "all" ? "active" : ""}
+                            onClick={() => {
+                                updateSel({ target: "all" });
+                                setSelecting(false);
+                            }}
+                        >
+                            All Lights
+                        </button>
+                        <button
+                            className={
+                                sel && sel.target !== "all"
+                                    ? "active"
+                                    : selecting
+                                      ? "active"
+                                      : ""
+                            }
+                            onClick={() => sel && setSelecting(true)}
+                        >
+                            Selection
+                        </button>
+                    </div>
+                    <h2 className="sub">Opacity</h2>
+                    <div className="slider-block">
+                        <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            disabled={!sel}
+                            value={sel?.brightness ?? 100}
+                            onChange={(e) =>
+                                updateSel({
+                                    brightness: Number(e.target.value),
+                                })
+                            }
+                        />
+                        <div className="slider-labels">
+                            <span>hidden</span>
+                            <span>visible</span>
+                        </div>
+                    </div>
+                </section>
+
+                {/* -------------------------------------------------------- COLOR */}
+                <section
+                    className={`panel panel-color${sel ? "" : " disabled"}`}
+                >
+                    <h2>Color</h2>
+                    {isGradientMode ? (
+                        <div
+                            className="grad-bar"
+                            style={{ background: gradient }}
+                            title="Click to add a color stop"
+                            onClick={(e) => {
+                                if (
+                                    !(e.target instanceof HTMLElement) ||
+                                    e.target.closest(".grad-stop")
+                                )
+                                    return;
+                                const rect =
+                                    e.currentTarget.getBoundingClientRect();
+                                addStopAt((e.clientX - rect.left) / rect.width);
+                            }}
+                        >
+                            {sel?.colors.map((c, i) => {
+                                const n = sel.colors.length;
+                                const left = n === 1 ? 50 : (i / (n - 1)) * 100;
+                                return (
+                                    <div
+                                        key={i}
+                                        className={`grad-stop${i === stopIndex ? " selected" : ""}`}
+                                        style={{
+                                            left: `${left}%`,
+                                            background: c,
+                                        }}
+                                        title="Click to edit · double-click to remove"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setColorIndex(i);
+                                        }}
+                                        onDoubleClick={(e) => {
+                                            e.stopPropagation();
+                                            removeStop(i);
+                                        }}
+                                    />
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="stop-chips">
+                            {sel?.colors.map((c, i) => (
+                                <button
+                                    key={i}
+                                    className={`stop-chip${i === stopIndex ? " selected" : ""}`}
+                                    style={{ background: c }}
+                                    title={
+                                        sel.colors.length > 1
+                                            ? "Click to edit · double-click to remove"
+                                            : "Click to edit"
+                                    }
+                                    onClick={() => setColorIndex(i)}
+                                    onDoubleClick={() => removeStop(i)}
+                                />
+                            ))}
+                            {sel && sel.mode !== "Solid" && (
+                                <button
+                                    className="stop-chip add"
+                                    title="Add a color"
+                                    onClick={() => {
+                                        const colors = [
+                                            ...sel.colors,
+                                            currentColor,
+                                        ];
+                                        updateSel({ colors });
+                                        setColorIndex(colors.length - 1);
+                                    }}
+                                >
+                                    +
+                                </button>
+                            )}
+                        </div>
+                    )}
+                    <div className="color-row">
+                        <ColorWheel
+                            color={currentColor}
+                            onChange={setStopColor}
+                            disabled={!sel}
+                        />
+                        <div className="swatches">
+                            {[...PRESET_SWATCHES, ...swatches].map((c) => (
+                                <button
+                                    key={c}
+                                    className="swatch"
+                                    style={{ background: c }}
+                                    title={c}
+                                    onClick={() => setStopColor(c)}
+                                />
+                            ))}
+                            <button
+                                className="swatch add"
+                                title="Save current color"
+                                onClick={() =>
+                                    setSwatches((s) =>
+                                        s.includes(currentColor) ||
+                                        PRESET_SWATCHES.includes(currentColor)
+                                            ? s
+                                            : [...s.slice(-7), currentColor],
+                                    )
+                                }
+                            >
+                                +
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                {/* -------------------------------------------------------- SPEED */}
+                <section
+                    className={`panel panel-speed${!sel || sel.mode === "Solid" ? " disabled" : ""}`}
+                >
+                    <h2>Speed</h2>
+                    <div className="slider-block">
+                        <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            disabled={!sel || sel.mode === "Solid"}
+                            value={sel?.speed ?? 50}
+                            onChange={(e) =>
+                                updateSel({ speed: Number(e.target.value) })
+                            }
+                        />
+                        <div className="slider-labels">
+                            <span>slow</span>
+                            <span>fast</span>
+                        </div>
+                    </div>
+                </section>
+            </footer>
+        </div>
+    );
 }
 
 export default App;
