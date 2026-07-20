@@ -51,6 +51,22 @@ export const MODE_DEFAULT_COLORS: Record<RgbMode, string[]> = {
   Pulse: ["#ff00ff"],
 };
 
+/** A named snapshot of the whole effect list, for quick recall. */
+export interface Preset {
+  id: string;
+  name: string;
+  effects: Effect[];
+}
+
+/** Deep-clone an effect list, giving each effect a fresh id. */
+export function cloneEffects(effects: Effect[]): Effect[] {
+  return effects.map((e) => ({
+    ...e,
+    id: `fx-${Math.random().toString(36).slice(2, 9)}`,
+    colors: [...e.colors],
+  }));
+}
+
 export function makeEffect(mode: RgbMode): Effect {
   return {
     id: `fx-${Math.random().toString(36).slice(2, 9)}`,

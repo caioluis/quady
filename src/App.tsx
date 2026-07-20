@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ColorWheel } from "./components/ColorWheel";
 import {
+    cloneEffects,
     compileEffect,
     CompiledEffect,
     Effect,
@@ -11,6 +12,7 @@ import {
     LightTarget,
     makeEffect,
     MODES,
+    Preset,
     RgbMode,
 } from "./rgb";
 
@@ -18,6 +20,7 @@ import "./App.css";
 
 const STORAGE_EFFECTS = "quady.effects";
 const STORAGE_SWATCHES = "quady.swatches";
+const STORAGE_PRESETS = "quady.presets";
 
 const PRESET_SWATCHES = [
     "#ff3b30",
@@ -50,6 +53,19 @@ function loadSwatches(): string[] {
     try {
         const raw = localStorage.getItem(STORAGE_SWATCHES);
         if (raw) return JSON.parse(raw) as string[];
+    } catch {
+        // ignore
+    }
+    return [];
+}
+
+function loadPresets(): Preset[] {
+    try {
+        const raw = localStorage.getItem(STORAGE_PRESETS);
+        if (raw) {
+            const parsed = JSON.parse(raw) as Preset[];
+            if (Array.isArray(parsed)) return parsed;
+        }
     } catch {
         // ignore
     }
@@ -214,6 +230,124 @@ function LightsStage({
     );
 }
 
+// ------------------------------------------------------------------ presets
+
+interface PresetsMenuProps {
+    presets: Preset[];
+    activeId: string | null;
+    onApply: (id: string) => void;
+    onSave: (name: string) => void;
+    onDelete: (id: string) => void;
+}
+
+function PresetsMenu({
+    presets,
+    activeId,
+    onApply,
+    onSave,
+    onDelete,
+}: PresetsMenuProps) {
+    const [open, setOpen] = useState(false);
+    const [name, setName] = useState("");
+    const active = presets.find((p) => p.id === activeId);
+
+    const commitSave = () => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        onSave(trimmed);
+        setName("");
+    };
+
+    return (
+        <div className="presets-wrap">
+            <button
+                className="presets-toggle"
+                onClick={() => setOpen((v) => !v)}
+                title="Presets"
+            >
+                <svg viewBox="0 0 16 16" width="13" height="13">
+                    <path
+                        d="M3 3.5h10M3 8h10M3 12.5h10"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                    />
+                </svg>
+                <span className="presets-label">
+                    {active ? active.name : "Presets"}
+                </span>
+                <svg viewBox="0 0 16 16" width="11" height="11">
+                    <path
+                        d="M4 6l4 4 4-4"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        fill="none"
+                    />
+                </svg>
+            </button>
+            {open && (
+                <>
+                    <div
+                        className="menu-backdrop"
+                        onClick={() => setOpen(false)}
+                    />
+                    <div className="presets-menu">
+                        {presets.length === 0 && (
+                            <div className="presets-empty">
+                                No presets saved yet
+                            </div>
+                        )}
+                        {presets.map((p) => (
+                            <div
+                                key={p.id}
+                                className={`presets-item${p.id === activeId ? " active" : ""}`}
+                                onClick={() => {
+                                    onApply(p.id);
+                                    setOpen(false);
+                                }}
+                            >
+                                <span className="presets-check">
+                                    {p.id === activeId ? "✓" : ""}
+                                </span>
+                                <span className="presets-name">{p.name}</span>
+                                <button
+                                    className="presets-del"
+                                    title="Delete preset"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDelete(p.id);
+                                    }}
+                                >
+                                    ×
+                                </button>
+                            </div>
+                        ))}
+                        <div className="presets-save">
+                            <input
+                                type="text"
+                                placeholder="Save current as…"
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") commitSave();
+                                }}
+                            />
+                            <button
+                                disabled={!name.trim()}
+                                onClick={commitSave}
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
 // ---------------------------------------------------------------------- app
 
 const initialEffects = loadEffects();
@@ -227,6 +361,8 @@ function App() {
     const [addOpen, setAddOpen] = useState(false);
     const [selecting, setSelecting] = useState(false);
     const [swatches, setSwatches] = useState<string[]>(loadSwatches);
+    const [presets, setPresets] = useState<Preset[]>(loadPresets);
+    const [activePresetId, setActivePresetId] = useState<string | null>(null);
     const [statusText, setStatusText] = useState("backend unavailable");
 
     const sel = effects.find((e) => e.id === selectedId) ?? null;
@@ -263,6 +399,10 @@ function App() {
     useEffect(() => {
         localStorage.setItem(STORAGE_SWATCHES, JSON.stringify(swatches));
     }, [swatches]);
+
+    useEffect(() => {
+        localStorage.setItem(STORAGE_PRESETS, JSON.stringify(presets));
+    }, [presets]);
 
     const pushEffectsToBackend = async (all: Effect[]) => {
         try {
@@ -331,6 +471,57 @@ function App() {
         setColorIndex(Math.max(0, Math.min(idx, colors.length - 1)));
     };
 
+    const savePreset = (name: string) => {
+        const preset: Preset = {
+            id: `ps-${Math.random().toString(36).slice(2, 9)}`,
+            name,
+            effects: cloneEffects(effects),
+        };
+        setPresets((all) => {
+            // Overwrite a preset with the same name instead of duplicating.
+            const existing = all.find((p) => p.name === name);
+            if (existing) {
+                setActivePresetId(existing.id);
+                return all.map((p) =>
+                    p.name === name ? { ...preset, id: existing.id } : p,
+                );
+            }
+            setActivePresetId(preset.id);
+            return [...all, preset];
+        });
+    };
+
+    const applyPreset = (id: string) => {
+        const preset = presets.find((p) => p.id === id);
+        if (!preset) return;
+        const next = cloneEffects(preset.effects);
+        setEffects(next);
+        setSelectedId(next[0]?.id ?? null);
+        setColorIndex(0);
+        setSelecting(false);
+        setActivePresetId(id);
+    };
+
+    const deletePreset = (id: string) => {
+        setPresets((all) => all.filter((p) => p.id !== id));
+        setActivePresetId((cur) => (cur === id ? null : cur));
+    };
+
+    // Editing the effects means we're no longer on a saved preset verbatim.
+    useEffect(() => {
+        setActivePresetId((cur) => {
+            if (!cur) return cur;
+            const preset = presets.find((p) => p.id === cur);
+            if (!preset) return null;
+            const strip = (list: Effect[]) =>
+                list.map(({ id: _id, ...rest }) => rest);
+            const same =
+                JSON.stringify(strip(preset.effects)) ===
+                JSON.stringify(strip(effects));
+            return same ? cur : null;
+        });
+    }, [effects, presets]);
+
     // Same resolution rule as the backend: the last effect in the list whose
     // target includes an LED group drives that group.
     const effectFor = (which: LightTarget): Effect | null => {
@@ -355,6 +546,13 @@ function App() {
             <header className="topbar">
                 <span className="wordmark">Quady</span>
                 <span className="topbar-sub">HyperX QuadCast S</span>
+                <PresetsMenu
+                    presets={presets}
+                    activeId={activePresetId}
+                    onApply={applyPreset}
+                    onSave={savePreset}
+                    onDelete={deletePreset}
+                />
                 <span className="topbar-status">{statusText}</span>
             </header>
 
