@@ -10,6 +10,10 @@ use rusb::{DeviceHandle, GlobalContext};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
+use tauri::{
+    AppHandle, CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu,
+    SystemTrayMenuItem,
+};
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
@@ -53,6 +57,78 @@ fn device_status(state: tauri::State<RgbState>) -> String {
     state.status.lock().unwrap().clone()
 }
 
+/// A preset entry surfaced in the menu-bar tray. Mirrors the UI `Preset` type
+/// (only the fields the tray needs).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TrayPreset {
+    id: String,
+    name: String,
+    /// Whether this preset matches the effects currently on the device.
+    #[serde(default)]
+    active: bool,
+}
+
+/// Prefix marking a tray menu item as a preset selection.
+const TRAY_PRESET_PREFIX: &str = "preset::";
+
+/// Build the tray menu from the current preset list, plus the standard
+/// Show/Quit controls.
+fn build_tray_menu(presets: &[TrayPreset]) -> SystemTrayMenu {
+    let mut menu = SystemTrayMenu::new();
+    if presets.is_empty() {
+        menu = menu.add_item(CustomMenuItem::new("noop", "No presets saved").disabled());
+    } else {
+        for p in presets {
+            let label = if p.active {
+                format!("✓  {}", p.name)
+            } else {
+                format!("    {}", p.name)
+            };
+            menu = menu.add_item(CustomMenuItem::new(
+                format!("{TRAY_PRESET_PREFIX}{}", p.id),
+                label,
+            ));
+        }
+    }
+    menu.add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("show", "Show Quady"))
+        .add_item(CustomMenuItem::new("quit", "Quit Quady"))
+}
+
+/// Rebuild the menu-bar tray so it lists the user's saved presets. Called from
+/// the UI whenever presets change, so the tray stays in sync.
+#[tauri::command]
+fn set_tray_presets(app: AppHandle, presets: Vec<TrayPreset>) -> Result<(), String> {
+    app.tray_handle()
+        .set_menu(build_tray_menu(&presets))
+        .map_err(|e| e.to_string())
+}
+
+/// Route tray menu clicks: preset items ask the UI to apply that preset, while
+/// Show/Quit drive the window and app lifecycle.
+fn on_tray_event(app: &AppHandle, event: SystemTrayEvent) {
+    if let SystemTrayEvent::MenuItemClick { id, .. } = event {
+        match id.as_str() {
+            "quit" => app.exit(0),
+            "show" => {
+                if let Some(win) = app.get_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+            other => {
+                if let Some(preset_id) = other.strip_prefix(TRAY_PRESET_PREFIX) {
+                    if let Some(win) = app.get_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                    let _ = app.emit_all("apply-preset", preset_id.to_string());
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let (tx, rx) = mpsc::channel::<Vec<EffectConfig>>();
     let status = Arc::new(Mutex::new("waiting for effect".to_string()));
@@ -65,7 +141,14 @@ fn main() {
             tx: Mutex::new(tx),
             status,
         })
-        .invoke_handler(tauri::generate_handler![greet, apply_effects, device_status])
+        .system_tray(SystemTray::new().with_menu(build_tray_menu(&[])))
+        .on_system_tray_event(on_tray_event)
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            apply_effects,
+            device_status,
+            set_tray_presets
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

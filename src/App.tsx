@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/tauri";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -501,6 +502,33 @@ function App() {
         setSelecting(false);
         setActivePresetId(id);
     };
+
+    // Keep a ref to the latest applyPreset so the tray listener (subscribed
+    // once) always resolves against current preset state.
+    const applyPresetRef = useRef(applyPreset);
+    applyPresetRef.current = applyPreset;
+
+    useEffect(() => {
+        const unlisten = listen<string>("apply-preset", (event) => {
+            applyPresetRef.current(event.payload);
+        });
+        return () => {
+            unlisten.then((fn) => fn());
+        };
+    }, []);
+
+    // Mirror the preset list (and which one is active) into the menu-bar tray.
+    useEffect(() => {
+        invoke("set_tray_presets", {
+            presets: presets.map((p) => ({
+                id: p.id,
+                name: p.name,
+                active: p.id === activePresetId,
+            })),
+        }).catch(() => {
+            // Tray unavailable (e.g. running in the browser) — ignore.
+        });
+    }, [presets, activePresetId]);
 
     const deletePreset = (id: string) => {
         setPresets((all) => all.filter((p) => p.id !== id));
