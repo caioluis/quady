@@ -10,11 +10,14 @@ import {
     Effect,
     frameColors,
     hexToRgb,
+    hsvToRgb,
     LightTarget,
     makeEffect,
     MODES,
     Preset,
     RgbMode,
+    rgbToHex,
+    rgbToHsv,
 } from "./rgb";
 
 import "./App.css";
@@ -137,6 +140,23 @@ interface StageProps {
     onPick: (which: "top" | "bottom") => void;
 }
 
+/** Boosts saturation, then mixes toward white by `whitenAmount` (0-1), for
+ *  the hot spot each light casts at the extremity of the mic it drives. */
+function tintColor(
+    hex: string,
+    whitenAmount: number,
+    saturateAmount = 0,
+): string {
+    let [r, g, b] = hexToRgb(hex);
+    if (saturateAmount) {
+        const [h, s, v] = rgbToHsv(r, g, b);
+        const boosted = Math.min(1, s + (1 - s) * saturateAmount);
+        [r, g, b] = hsvToRgb(h, boosted, v);
+    }
+    const mix = (c: number) => Math.round(c + (255 - c) * whitenAmount);
+    return rgbToHex(mix(r), mix(g), mix(b));
+}
+
 function LightsStage({
     topEffect,
     bottomEffect,
@@ -145,8 +165,7 @@ function LightsStage({
     onPick,
 }: StageProps) {
     const stageRef = useRef<HTMLElement>(null);
-    const topRef = useRef<HTMLDivElement>(null);
-    const bottomRef = useRef<HTMLDivElement>(null);
+    const fillRef = useRef<HTMLDivElement>(null);
 
     const topCompiled = useMemo(
         () => (topEffect ? compileEffect(topEffect) : null),
@@ -158,11 +177,6 @@ function LightsStage({
     );
 
     useEffect(() => {
-        const paint = (el: HTMLDivElement | null, c: string) => {
-            if (!el) return;
-            el.style.background = `radial-gradient(circle at 38% 34%, ${c}, ${c} 55%, transparent 130%)`;
-            el.style.boxShadow = `0 0 34px 8px ${c}b0, 0 0 110px 34px ${c}45`;
-        };
         let raf = 0;
         const start = performance.now();
         const colorAt = (
@@ -178,14 +192,10 @@ function LightsStage({
             const t = now - start;
             const top = colorAt(topCompiled, t, "top");
             const bottom = colorAt(bottomCompiled, t, "bottom");
-            paint(topRef.current, top);
-            paint(bottomRef.current, bottom);
-            if (stageRef.current) {
-                stageRef.current.style.setProperty("--amb-top", `${top}1f`);
-                stageRef.current.style.setProperty(
-                    "--amb-bottom",
-                    `${bottom}1a`,
-                );
+            if (fillRef.current) {
+                const topHot = tintColor(top, 0.15, 0.99);
+                const bottomHot = tintColor(bottom, 0.15, 0.99);
+                fillRef.current.style.background = `linear-gradient(180deg, ${topHot} 0%, ${top} 22%, ${top} 25%, ${bottom} 75%, ${bottom} 78%, ${bottomHot} 100%)`;
             }
             raf = requestAnimationFrame(tick);
         };
@@ -194,9 +204,10 @@ function LightsStage({
     }, [topCompiled, bottomCompiled]);
 
     const target = selected?.target ?? "all";
-    const lightClass = (which: "top" | "bottom") =>
+    const hitClass = (which: "top" | "bottom") =>
         [
-            "light",
+            "light-hit",
+            `light-hit-${which}`,
             selecting ? "pickable" : "",
             !selecting && target === which ? "targeted" : "",
         ]
@@ -212,20 +223,25 @@ function LightsStage({
                 </div>
             )}
             <div className="lights">
+                <div className="mic-fill-clip">
+                    <div className="mic-fill" ref={fillRef} />
+                </div>
                 <div
-                    className={lightClass("top")}
+                    className={hitClass("top")}
                     title="Top light"
                     onClick={() => selecting && onPick("top")}
-                >
-                    <div className="light-core" ref={topRef} />
-                </div>
+                />
                 <div
-                    className={lightClass("bottom")}
+                    className={hitClass("bottom")}
                     title="Bottom light"
                     onClick={() => selecting && onPick("bottom")}
-                >
-                    <div className="light-core" ref={bottomRef} />
-                </div>
+                />
+                <img
+                    className="mic-overlay"
+                    src="/microphone-overlay.webp"
+                    alt=""
+                    draggable={false}
+                />
             </div>
         </main>
     );

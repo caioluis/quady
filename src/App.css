@@ -196,12 +196,10 @@
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  background:
-    radial-gradient(55% 60% at 50% 34%, var(--amb-top, transparent), transparent 70%),
-    radial-gradient(55% 60% at 50% 66%, var(--amb-bottom, transparent), transparent 70%),
-    radial-gradient(120% 120% at 50% 50%, var(--stage) 40%, var(--bg) 100%);
+  padding-bottom: 16px;
+  background: radial-gradient(120% 120% at 50% 50%, var(--stage) 40%, var(--bg) 100%);
 }
 
 .stage-hint {
@@ -240,53 +238,107 @@
   }
 }
 
+/* .lights is sized to exactly match the mic art's own box (same aspect
+   ratio as the source image), so every child below can be positioned with
+   percentages that track the mic art precisely at any window size. */
 .lights {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 30px;
-}
-
-.light {
   position: relative;
-  width: 118px;
-  height: 118px;
-  border-radius: 50%;
-  border: 1px solid #23272d;
-  background: #0e1013;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  flex: none;
+  height: 340px;
+  max-height: calc(100vh - 326px);
+  aspect-ratio: 451 / 611;
 }
 
-.light-core {
+.mic-overlay {
   position: absolute;
-  inset: 13px;
-  border-radius: 50%;
-  background: #000;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  user-select: none;
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.55));
+  z-index: 2;
 }
 
-.light.pickable {
+/* fill sits behind the mic art, clipped to the mesh window measured from
+   the source image; its color only reaches the eye through the mesh's
+   transparent holes, so it can never bleed past the mic silhouette */
+.mic-fill-clip {
+  position: absolute;
+  inset: 16% 24.8% 23% 24.6%;
+  border-radius: 10%;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.mic-fill {
+  position: absolute;
+  inset: -14%;
+  filter: blur(5px) saturate(0.55) brightness(2) contrast(1);
+  transition: filter 0.15s ease;
+}
+
+.light-hit {
+  position: absolute;
+  left: 24.6%;
+  right: 24.8%;
+  height: 30.5%;
+  z-index: 3;
+}
+
+.light-hit-top {
+  top: 16%;
+}
+
+.light-hit-bottom {
+  bottom: 23%;
+}
+
+.light-hit.pickable {
   cursor: pointer;
-  border-color: var(--accent);
-  animation: pick-pulse 1.4s ease-in-out infinite;
 }
 
-.light.pickable:hover {
-  transform: scale(1.05);
+/* target indicator lives outside the mic body as a small arrow, not a
+   ring drawn over the mesh */
+.light-hit::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -20px;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 9px solid var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s ease, right 0.15s ease;
 }
 
-@keyframes pick-pulse {
+.light-hit.pickable::after {
+  opacity: 0.45;
+  animation: arrow-pulse 1.4s ease-in-out infinite;
+}
+
+.light-hit.pickable:hover::after {
+  opacity: 1;
+  right: -25px;
+  animation: none;
+}
+
+.light-hit.targeted::after {
+  opacity: 1;
+  border-left-color: var(--accent-hi);
+}
+
+@keyframes arrow-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(47, 123, 220, 0.55);
+    opacity: 0.3;
   }
   50% {
-    box-shadow: 0 0 0 9px rgba(47, 123, 220, 0);
+    opacity: 0.7;
   }
-}
-
-.light.targeted {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(47, 123, 220, 0.45);
 }
 
 /* ---------------------------------------------------------------- controls */
