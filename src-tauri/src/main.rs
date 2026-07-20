@@ -12,7 +12,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::{
     AppHandle, CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu,
-    SystemTrayMenuItem,
+    SystemTrayMenuItem, WindowEvent,
 };
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
@@ -143,6 +143,14 @@ fn main() {
         })
         .system_tray(SystemTray::new().with_menu(build_tray_menu(&[])))
         .on_system_tray_event(on_tray_event)
+        .on_window_event(|event| {
+            // Closing the window hides it to the menu-bar tray instead of
+            // quitting, so presets stay hot-selectable. Quit via the tray.
+            if let WindowEvent::CloseRequested { api, .. } = event.event() {
+                let _ = event.window().hide();
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             apply_effects,
